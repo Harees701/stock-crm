@@ -57,7 +57,9 @@ declare global {
 }
 
 function createDb(): DatabaseSync {
-  const file = path.join(process.cwd(), "stock-crm.db");
+  // In production set SQLITE_PATH to a file on a persistent volume,
+  // e.g. /data/stock-crm.db on Railway. Locally it defaults to the project root.
+  const file = process.env.SQLITE_PATH ?? path.join(process.cwd(), "stock-crm.db");
   const database = new DatabaseSync(file);
   database.exec("PRAGMA journal_mode = WAL;");
   database.exec("PRAGMA foreign_keys = ON;");
@@ -158,24 +160,32 @@ function seed(database: DatabaseSync) {
   product.run("Cold Air Intake", "INT-CAI1", "High-flow cold air intake kit", 20, 189.0, 8, null);
 }
 
-const db: DatabaseSync = globalThis.__stockCrmDb ?? (globalThis.__stockCrmDb = createDb());
+// Open the connection lazily on first query. This keeps `next build` from
+// touching the database (and the production volume) while it analyses routes.
+function conn(): DatabaseSync {
+  if (!globalThis.__stockCrmDb) {
+    globalThis.__stockCrmDb = createDb();
+  }
+  return globalThis.__stockCrmDb;
+}
 
 // ---- Tiny typed query helpers ------------------------------------------------
 type Param = string | number | bigint | null;
 
 export function all<T>(sql: string, ...params: Param[]): T[] {
-  return db.prepare(sql).all(...params) as T[];
+  return conn().prepare(sql).all(...params) as T[];
 }
 
 export function get<T>(sql: string, ...params: Param[]): T | undefined {
-  return db.prepare(sql).get(...params) as T | undefined;
+  return conn().prepare(sql).get(...params) as T | undefined;
 }
 
 export function run(sql: string, ...params: Param[]) {
-  return db.prepare(sql).run(...params);
+  return conn().prepare(sql).run(...params);
 }
 
 export function tx(fn: () => void) {
+  const db = conn();
   db.exec("BEGIN");
   try {
     fn();
@@ -185,5 +195,3 @@ export function tx(fn: () => void) {
     throw err;
   }
 }
-
-export default db;
