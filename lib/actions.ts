@@ -3,6 +3,14 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { all, get, run, tx, type Product } from "@/lib/db";
+import {
+  requireUser,
+  hashPassword,
+  verifyPassword,
+  userCount,
+  createSession,
+  destroySession,
+} from "@/lib/auth";
 
 // ---- Helpers -----------------------------------------------------------------
 function str(formData: FormData, key: string): string {
@@ -25,6 +33,7 @@ function optId(formData: FormData, key: string): number | null {
 
 // ---- Suppliers ---------------------------------------------------------------
 export async function createSupplier(formData: FormData) {
+  await requireUser();
   const name = str(formData, "name");
   if (!name) return;
   run(
@@ -37,6 +46,7 @@ export async function createSupplier(formData: FormData) {
 }
 
 export async function deleteSupplier(formData: FormData) {
+  await requireUser();
   run("DELETE FROM suppliers WHERE id = ?", num(formData, "id"));
   revalidatePath("/suppliers");
   revalidatePath("/products");
@@ -44,6 +54,7 @@ export async function deleteSupplier(formData: FormData) {
 
 // ---- Customers ---------------------------------------------------------------
 export async function createCustomer(formData: FormData) {
+  await requireUser();
   const name = str(formData, "name");
   if (!name) return;
   run(
@@ -57,12 +68,14 @@ export async function createCustomer(formData: FormData) {
 }
 
 export async function deleteCustomer(formData: FormData) {
+  await requireUser();
   run("DELETE FROM customers WHERE id = ?", num(formData, "id"));
   revalidatePath("/customers");
 }
 
 // ---- Products ----------------------------------------------------------------
 export async function createProduct(formData: FormData) {
+  await requireUser();
   const name = str(formData, "name");
   if (!name) return;
   run(
@@ -81,6 +94,7 @@ export async function createProduct(formData: FormData) {
 }
 
 export async function deleteProduct(formData: FormData) {
+  await requireUser();
   run("DELETE FROM products WHERE id = ?", num(formData, "id"));
   revalidatePath("/products");
   revalidatePath("/");
@@ -88,6 +102,7 @@ export async function deleteProduct(formData: FormData) {
 
 // Quick stock adjustment (+/-) from the products page.
 export async function adjustStock(formData: FormData) {
+  await requireUser();
   const id = num(formData, "id");
   const delta = num(formData, "delta");
   run(
@@ -101,6 +116,7 @@ export async function adjustStock(formData: FormData) {
 
 // ---- Orders ------------------------------------------------------------------
 export async function createOrder(formData: FormData) {
+  await requireUser();
   const customerId = optId(formData, "customer_id");
   const productId = num(formData, "product_id");
   const quantity = Math.max(1, num(formData, "quantity"));
@@ -140,6 +156,7 @@ export async function createOrder(formData: FormData) {
 }
 
 export async function deleteOrder(formData: FormData) {
+  await requireUser();
   const id = num(formData, "id");
   // Restock items before removing the order.
   const items = all<{ product_id: number | null; quantity: number }>(
@@ -161,4 +178,43 @@ export async function deleteOrder(formData: FormData) {
   revalidatePath("/orders");
   revalidatePath("/products");
   revalidatePath("/");
+}
+
+// ---- Auth --------------------------------------------------------------------
+export async function login(formData: FormData) {
+  const username = str(formData, "username");
+  const password = String(formData.get("password") ?? "");
+  const user = get<{ id: number; password_hash: string }>(
+    "SELECT id, password_hash FROM users WHERE username = ?",
+    username
+  );
+  if (!user || !verifyPassword(password, user.password_hash)) {
+    redirect("/login?error=invalid");
+  }
+  await createSession(user.id);
+  redirect("/");
+}
+
+// First-run account creation. Only allowed while there are no users yet.
+export async function register(formData: FormData) {
+  if (userCount() > 0) redirect("/login");
+
+  const username = str(formData, "username");
+  const password = String(formData.get("password") ?? "");
+  if (username.length < 3 || password.length < 6) {
+    redirect("/login?error=weak");
+  }
+
+  const result = run(
+    "INSERT INTO users (username, password_hash) VALUES (?, ?)",
+    username,
+    hashPassword(password)
+  );
+  await createSession(Number(result.lastInsertRowid));
+  redirect("/");
+}
+
+export async function logout() {
+  await destroySession();
+  redirect("/login");
 }
